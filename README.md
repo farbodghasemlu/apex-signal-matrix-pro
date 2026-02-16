@@ -169,3 +169,13 @@ Create alerts directly from the indicator’s alert conditions and choose once-p
 ## Risk Notice
 
 This tool provides technical signal and structure guidance, not certainty. Use position sizing, hard risk limits, and execution discipline.
+
+## License
+
+This project is licensed under the GNU General Public License v3.0.
+
+You are free to use, modify, and distribute this software, provided that
+any derivative works are also distributed under the same GPL license and
+the source code is made available.
+
+See the LICENSE file for full details.
