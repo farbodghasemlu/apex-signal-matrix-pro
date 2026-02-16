@@ -1,0 +1,681 @@
+//@version=6
+indicator("Apex Signal Matrix Pro", shorttitle="ASM Pro", overlay=true, format=format.price, max_labels_count=500, max_lines_count=200, max_boxes_count=50)
+
+// =============================================================
+// COLOR PALETTE
+// =============================================================
+color COLOR_LONG = #0FBF9F
+color COLOR_SHORT = #FF5D73
+color COLOR_NEUTRAL = #8D99AE
+color COLOR_ACCENT = #F4A259
+color COLOR_PRIME = #00C2FF
+color COLOR_EXIT = #F7B801
+
+color COLOR_BG = #0F172A
+color COLOR_BORDER = #334155
+color COLOR_TEXT = #E2E8F0
+color COLOR_TEXT_MUTED = #94A3B8
+
+// =============================================================
+// INPUTS
+// =============================================================
+string GROUP_ENGINE = "Engine"
+int inputLookback = input.int(34, "Core Lookback", minval=20, maxval=120, group=GROUP_ENGINE, tooltip="Main statistical lookback for score normalization.")
+int inputSwingLen = input.int(4, "Swing Confirmation Length", minval=2, maxval=12, group=GROUP_ENGINE, tooltip="Bars on each side used to confirm pivots.")
+int inputATRLen = input.int(14, "ATR Length", minval=5, maxval=50, group=GROUP_ENGINE)
+int inputEMAFast = input.int(21, "Fast EMA", minval=5, maxval=100, group=GROUP_ENGINE)
+int inputEMAMid = input.int(55, "Mid EMA", minval=10, maxval=200, group=GROUP_ENGINE)
+int inputEMASlow = input.int(200, "Slow EMA", minval=20, maxval=500, group=GROUP_ENGINE)
+int inputADXLen = input.int(14, "ADX Length", minval=5, maxval=50, group=GROUP_ENGINE)
+int inputSmooth = input.int(3, "Score Smoothing", minval=1, maxval=10, group=GROUP_ENGINE)
+
+string GROUP_THRESHOLDS = "Signal Thresholds"
+int inputEntryThreshold = input.int(67, "Entry Threshold", minval=50, maxval=95, group=GROUP_THRESHOLDS, tooltip="Minimum score for a directional entry signal.")
+int inputStrongThreshold = input.int(80, "Strong Entry Threshold", minval=60, maxval=98, group=GROUP_THRESHOLDS, tooltip="Strong signal threshold (higher confidence marker).")
+int inputExitThreshold = input.int(48, "Exit Threshold", minval=20, maxval=70, group=GROUP_THRESHOLDS, tooltip="When active-side score falls under this level, exit is allowed.")
+int inputBiasEdge = input.int(8, "Bias Edge", minval=3, maxval=25, group=GROUP_THRESHOLDS, tooltip="Required score spread between long and short to establish directional bias.")
+int inputCooldown = input.int(6, "Signal Cooldown (bars)", minval=1, maxval=30, group=GROUP_THRESHOLDS)
+
+string GROUP_FILTERS = "Filters"
+bool inputUseHTF = input.bool(true, "Use Higher-Timeframe Alignment", group=GROUP_FILTERS)
+string inputHTF = input.timeframe("240", "Higher-Timeframe", group=GROUP_FILTERS)
+bool inputAvoidChop = input.bool(true, "Avoid Choppy Regime", group=GROUP_FILTERS)
+bool inputUseSessionFilter = input.bool(false, "Use Session Filter", group=GROUP_FILTERS)
+string inputSession = input.session("0700-1700", "Allowed Session", group=GROUP_FILTERS)
+float inputMinRR = input.float(1.2, "Minimum R:R", minval=0.7, maxval=5.0, step=0.1, group=GROUP_FILTERS)
+
+string GROUP_RISK = "Risk Model"
+float inputStopATR = input.float(1.4, "Base Stop ATR", minval=0.5, maxval=4.0, step=0.1, group=GROUP_RISK)
+float inputTrailATR = input.float(1.2, "Trail ATR", minval=0.4, maxval=4.0, step=0.1, group=GROUP_RISK)
+int inputTrailLookback = input.int(10, "Trail Lookback", minval=3, maxval=50, group=GROUP_RISK)
+float inputRR1 = input.float(1.0, "TP1 R Multiple", minval=0.5, maxval=5.0, step=0.1, group=GROUP_RISK)
+float inputRR2 = input.float(2.0, "TP2 R Multiple", minval=0.8, maxval=8.0, step=0.1, group=GROUP_RISK)
+float inputRR3 = input.float(3.0, "TP3 R Multiple", minval=1.0, maxval=12.0, step=0.1, group=GROUP_RISK)
+bool inputResetPlanOnExit = input.bool(false, "Clear Trade Map On Exit", group=GROUP_RISK)
+
+string GROUP_WEIGHTS = "Scoring Weights"
+float inputWeightTrend = input.float(0.28, "Trend", minval=0.05, maxval=1.0, step=0.01, group=GROUP_WEIGHTS)
+float inputWeightMomentum = input.float(0.28, "Momentum", minval=0.05, maxval=1.0, step=0.01, group=GROUP_WEIGHTS)
+float inputWeightStructure = input.float(0.22, "Structure", minval=0.05, maxval=1.0, step=0.01, group=GROUP_WEIGHTS)
+float inputWeightParticipation = input.float(0.10, "Participation", minval=0.0, maxval=1.0, step=0.01, group=GROUP_WEIGHTS)
+float inputWeightRisk = input.float(0.12, "Risk/Reward", minval=0.0, maxval=1.0, step=0.01, group=GROUP_WEIGHTS)
+
+string GROUP_ZONES = "Zones"
+bool inputShowZones = input.bool(true, "Show Demand/Supply Zones", group=GROUP_ZONES)
+int inputZoneDepth = input.int(24, "Zone Memory", minval=8, maxval=60, group=GROUP_ZONES, tooltip="How many pivot levels are kept for cluster scoring.")
+float inputZoneWidthATR = input.float(0.22, "Zone Width (ATR)", minval=0.05, maxval=1.0, step=0.01, group=GROUP_ZONES)
+bool inputShowSweepMarks = input.bool(true, "Show Liquidity Sweep Marks", group=GROUP_ZONES)
+
+string GROUP_VISUAL = "Visual"
+bool inputShowRibbon = input.bool(true, "Show EMA Ribbon", group=GROUP_VISUAL)
+bool inputShowTradeMap = input.bool(true, "Show Trade Map", group=GROUP_VISUAL)
+bool inputShowBarColor = input.bool(true, "Color Candles By Bias", group=GROUP_VISUAL)
+bool inputShowBackground = input.bool(true, "Show Bias Background", group=GROUP_VISUAL)
+bool inputShowSignalMarkers = input.bool(true, "Show Marker Shapes", group=GROUP_VISUAL, tooltip="Triangle and symbol markers on signal bars.")
+bool inputShowSignalTags = input.bool(true, "Show Detailed Signal Tags", group=GROUP_VISUAL, tooltip="Adds detailed BUY/SELL/EXIT labels on signal bars.")
+
+string GROUP_DASH = "Dashboard"
+bool inputShowDashboard = input.bool(true, "Show Dashboard", group=GROUP_DASH)
+string inputDashMode = input.string("Chart Anchored", "Dashboard Mode", options=["Chart Anchored", "Fixed Table", "Both"], group=GROUP_DASH, tooltip="Chart Anchored moves with drag/scale. Fixed Table stays pinned to screen.")
+string inputDashPosition = input.string("Top Right", "Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right", "Middle Left"], group=GROUP_DASH)
+string inputDashSize = input.string("Small", "Text Size", options=["Tiny", "Small", "Normal", "Large"], group=GROUP_DASH)
+int inputHudBarsOffset = input.int(0, "HUD Bar Offset", minval=0, maxval=25, group=GROUP_DASH, tooltip="Horizontal offset (bars) for chart-anchored HUD.")
+
+string GROUP_ALERTS = "Alerts"
+bool inputAlertEntries = input.bool(true, "Entry Alerts", group=GROUP_ALERTS)
+bool inputAlertStrong = input.bool(true, "Strong Signal Alerts", group=GROUP_ALERTS)
+bool inputAlertExits = input.bool(true, "Exit Alerts", group=GROUP_ALERTS)
+bool inputAlertSweeps = input.bool(false, "Sweep Alerts", group=GROUP_ALERTS)
+
+// =============================================================
+// HELPER FUNCTIONS
+// =============================================================
+clamp(float value, float minValue, float maxValue) =>
+    math.max(minValue, math.min(maxValue, value))
+
+normScore(float value, float minValue, float maxValue) =>
+    maxValue == minValue ? 50.0 : clamp((value - minValue) / (maxValue - minValue) * 100.0, 0.0, 100.0)
+
+getTablePosition(string pos) =>
+    switch pos
+        "Top Right" => position.top_right
+        "Top Left" => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left" => position.bottom_left
+        "Middle Right" => position.middle_right
+        "Middle Left" => position.middle_left
+        => position.top_right
+
+getTextSize(string sz, bool isHeader) =>
+    switch sz
+        "Tiny" => size.tiny
+        "Small" => isHeader ? size.small : size.tiny
+        "Normal" => isHeader ? size.normal : size.small
+        "Large" => isHeader ? size.large : size.normal
+        => size.small
+
+getAdx(int len) =>
+    [_, _, adxVal] = ta.dmi(len, len)
+    adxVal
+
+makeMeter(float score) =>
+    int filled = int(math.round(clamp(score / 10.0, 0.0, 10.0)))
+    string meter = ""
+    for i = 0 to 9
+        meter += i < filled ? "|" : "."
+    meter
+
+getZoneAbove(float[] levels, float source, float tolerance, float atrValue) =>
+    float bestLevel = na
+    float bestScore = 0.0
+    int n = array.size(levels)
+    if n > 0 and atrValue > 0
+        for i = 0 to n - 1
+            float level = array.get(levels, i)
+            if level > source
+                float distance = (level - source) / atrValue
+                if distance >= 0.2 and distance <= 6.0
+                    float cluster = 0.0
+                    for j = 0 to n - 1
+                        float peer = array.get(levels, j)
+                        if math.abs(peer - level) <= tolerance
+                            cluster += 1.0
+                    float score = cluster * 18.0 + (6.0 - distance) * 7.0
+                    if score > bestScore
+                        bestScore := score
+                        bestLevel := level
+    [bestLevel, clamp(bestScore, 0.0, 100.0)]
+
+getZoneBelow(float[] levels, float source, float tolerance, float atrValue) =>
+    float bestLevel = na
+    float bestScore = 0.0
+    int n = array.size(levels)
+    if n > 0 and atrValue > 0
+        for i = 0 to n - 1
+            float level = array.get(levels, i)
+            if level < source
+                float distance = (source - level) / atrValue
+                if distance >= 0.2 and distance <= 6.0
+                    float cluster = 0.0
+                    for j = 0 to n - 1
+                        float peer = array.get(levels, j)
+                        if math.abs(peer - level) <= tolerance
+                            cluster += 1.0
+                    float score = cluster * 18.0 + (6.0 - distance) * 7.0
+                    if score > bestScore
+                        bestScore := score
+                        bestLevel := level
+    [bestLevel, clamp(bestScore, 0.0, 100.0)]
+
+// =============================================================
+// CORE METRICS
+// =============================================================
+float atr = ta.atr(inputATRLen)
+float atrSafe = nz(atr, close * 0.01)
+float rangeSafe = math.max(high - low, syminfo.mintick)
+bool hasVolume = not na(volume)
+float avgVolume = ta.sma(volume, inputLookback)
+float volumeRatio = hasVolume and avgVolume > 0 ? volume / avgVolume : 1.0
+
+float emaFast = ta.ema(close, inputEMAFast)
+float emaMid = ta.ema(close, inputEMAMid)
+float emaSlow = ta.ema(close, inputEMASlow)
+float adx = getAdx(inputADXLen)
+float trendSlope = (emaFast - emaFast[5]) / (atrSafe * 5.0)
+float trendCompression = math.abs(emaFast - emaMid) / atrSafe
+
+float longTrendScore = 0.0
+longTrendScore += emaFast > emaMid ? 28.0 : 0.0
+longTrendScore += emaMid > emaSlow ? 24.0 : 0.0
+longTrendScore += close > emaFast ? 10.0 : 0.0
+longTrendScore += normScore(adx, 10.0, 40.0) * 0.25
+longTrendScore += normScore(trendSlope, -0.2, 0.9) * 0.13
+longTrendScore += normScore(trendCompression, 0.15, 1.8) * 0.10
+longTrendScore := clamp(longTrendScore, 0.0, 100.0)
+
+float shortTrendScore = 0.0
+shortTrendScore += emaFast < emaMid ? 28.0 : 0.0
+shortTrendScore += emaMid < emaSlow ? 24.0 : 0.0
+shortTrendScore += close < emaFast ? 10.0 : 0.0
+shortTrendScore += normScore(adx, 10.0, 40.0) * 0.25
+shortTrendScore += normScore(-trendSlope, -0.2, 0.9) * 0.13
+shortTrendScore += normScore(trendCompression, 0.15, 1.8) * 0.10
+shortTrendScore := clamp(shortTrendScore, 0.0, 100.0)
+
+float htfFast = request.security(syminfo.tickerid, inputHTF, ta.ema(close, inputEMAMid)[1], barmerge.gaps_off, barmerge.lookahead_off)
+float htfSlow = request.security(syminfo.tickerid, inputHTF, ta.ema(close, inputEMASlow)[1], barmerge.gaps_off, barmerge.lookahead_off)
+float htfClose = request.security(syminfo.tickerid, inputHTF, close[1], barmerge.gaps_off, barmerge.lookahead_off)
+float htfAdx = request.security(syminfo.tickerid, inputHTF, getAdx(inputADXLen)[1], barmerge.gaps_off, barmerge.lookahead_off)
+bool htfLongAligned = htfFast > htfSlow and htfClose > htfFast
+bool htfShortAligned = htfFast < htfSlow and htfClose < htfFast
+float htfLongScore = htfLongAligned ? 65.0 + normScore(htfAdx, 10.0, 35.0) * 0.35 : 35.0
+float htfShortScore = htfShortAligned ? 65.0 + normScore(htfAdx, 10.0, 35.0) * 0.35 : 35.0
+
+float rsi = ta.rsi(close, 14)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+float histMean = ta.sma(macdHist, inputLookback)
+float histStd = ta.stdev(macdHist, inputLookback)
+float histZ = histStd > 0 ? (macdHist - histMean) / histStd : 0.0
+float roc = ta.roc(close, 5)
+float bodyPct = (close - open) / rangeSafe * 100.0
+
+float upDownVolume = hasVolume ? volume * math.sign(close - open) : 0.0
+float cvd = ta.cum(upDownVolume)
+float cvdBaseline = ta.sma(cvd, 21)
+float cvdDelta = cvd - cvdBaseline
+float cvdBase = hasVolume ? math.max(ta.sma(volume, 21), 1.0) : 1.0
+float cvdNorm = cvdDelta / cvdBase
+
+float longMomentumScore = 0.0
+longMomentumScore += normScore(rsi, 45.0, 75.0) * 0.30
+longMomentumScore += normScore(histZ, -0.3, 1.8) * 0.24
+longMomentumScore += normScore(roc, -0.5, 2.8) * 0.20
+longMomentumScore += normScore(bodyPct, -20.0, 80.0) * 0.16
+longMomentumScore += hasVolume ? normScore(cvdNorm, -0.5, 4.0) * 0.10 : 5.0
+longMomentumScore := clamp(longMomentumScore, 0.0, 100.0)
+
+float shortMomentumScore = 0.0
+shortMomentumScore += normScore(100.0 - rsi, 45.0, 75.0) * 0.30
+shortMomentumScore += normScore(-histZ, -0.3, 1.8) * 0.24
+shortMomentumScore += normScore(-roc, -0.5, 2.8) * 0.20
+shortMomentumScore += normScore(-bodyPct, -20.0, 80.0) * 0.16
+shortMomentumScore += hasVolume ? normScore(-cvdNorm, -0.5, 4.0) * 0.10 : 5.0
+shortMomentumScore := clamp(shortMomentumScore, 0.0, 100.0)
+
+float participationScore = hasVolume ? normScore(volumeRatio, 0.7, 2.6) : 55.0
+
+float bbBasis = ta.sma(close, 20)
+float bbDev = ta.stdev(close, 20)
+float bbWidth = bbBasis != 0 ? (bbDev * 4.0) / bbBasis : 0.0
+float bbWidthAvg = ta.sma(bbWidth, 100)
+float bbWidthRatio = bbWidthAvg > 0 ? bbWidth / bbWidthAvg : 1.0
+float absMove = math.abs(close - close[1])
+float noise = ta.sma(absMove, inputLookback) * inputLookback
+float efficiency = noise > 0 and not na(close[inputLookback]) ? math.abs(close - close[inputLookback]) / noise : 0.0
+
+bool trendRegime = adx >= 20 and efficiency >= 0.22
+bool chopRegime = adx <= 16 and efficiency <= 0.17 and bbWidthRatio < 0.95
+float regimeScore = trendRegime ? 100.0 : chopRegime ? 25.0 : 60.0
+
+// =============================================================
+// MARKET STRUCTURE + ZONES
+// =============================================================
+float pivotHigh = ta.pivothigh(high, inputSwingLen, inputSwingLen)
+float pivotLow = ta.pivotlow(low, inputSwingLen, inputSwingLen)
+
+var float[] pivotHighs = array.new_float()
+var float[] pivotLows = array.new_float()
+
+if not na(pivotHigh)
+    array.push(pivotHighs, pivotHigh)
+    if array.size(pivotHighs) > inputZoneDepth
+        array.shift(pivotHighs)
+
+if not na(pivotLow)
+    array.push(pivotLows, pivotLow)
+    if array.size(pivotLows) > inputZoneDepth
+        array.shift(pivotLows)
+
+float zoneTolerance = atrSafe * inputZoneWidthATR
+[zoneAbove, zoneAboveStrength] = getZoneAbove(pivotHighs, close, zoneTolerance, atrSafe)
+[zoneBelow, zoneBelowStrength] = getZoneBelow(pivotLows, close, zoneTolerance, atrSafe)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+
+if not na(pivotHigh)
+    lastSwingHigh := pivotHigh
+if not na(pivotLow)
+    lastSwingLow := pivotLow
+
+int sweepLookback = math.max(8, int(math.round(inputLookback / 2.0)))
+float priorLowest = ta.lowest(low[1], sweepLookback)
+float priorHighest = ta.highest(high[1], sweepLookback)
+bool liquiditySweepLong = not na(priorLowest) and low < priorLowest and close > priorLowest
+bool liquiditySweepShort = not na(priorHighest) and high > priorHighest and close < priorHighest
+
+bool bosLong = not na(lastSwingHigh) and close > lastSwingHigh and close[1] <= lastSwingHigh
+bool bosShort = not na(lastSwingLow) and close < lastSwingLow and close[1] >= lastSwingLow
+
+float distToSupportATR = not na(zoneBelow) ? (close - zoneBelow) / atrSafe : 2.5
+float distToResistanceATR = not na(zoneAbove) ? (zoneAbove - close) / atrSafe : 2.5
+float supportProximityScore = not na(zoneBelow) ? normScore(3.5 - distToSupportATR, 0.0, 3.5) : 50.0
+float resistanceProximityScore = not na(zoneAbove) ? normScore(3.5 - distToResistanceATR, 0.0, 3.5) : 50.0
+float roomUpScore = not na(zoneAbove) ? normScore(distToResistanceATR, 0.5, 4.5) : 60.0
+float roomDownScore = not na(zoneBelow) ? normScore(distToSupportATR, 0.5, 4.5) : 60.0
+
+float longStructureScore = 0.0
+longStructureScore += supportProximityScore * 0.24
+longStructureScore += roomUpScore * 0.30
+longStructureScore += (100.0 - zoneAboveStrength) * 0.12
+longStructureScore += bosLong ? 20.0 : 0.0
+longStructureScore += liquiditySweepLong ? 16.0 : 0.0
+longStructureScore := clamp(longStructureScore, 0.0, 100.0)
+
+float shortStructureScore = 0.0
+shortStructureScore += resistanceProximityScore * 0.24
+shortStructureScore += roomDownScore * 0.30
+shortStructureScore += (100.0 - zoneBelowStrength) * 0.12
+shortStructureScore += bosShort ? 20.0 : 0.0
+shortStructureScore += liquiditySweepShort ? 16.0 : 0.0
+shortStructureScore := clamp(shortStructureScore, 0.0, 100.0)
+
+// =============================================================
+// RISK MODEL
+// =============================================================
+float fallbackSwingLow = ta.lowest(low, inputSwingLen * 2)
+float fallbackSwingHigh = ta.highest(high, inputSwingLen * 2)
+float longStructStop = not na(zoneBelow) ? zoneBelow - atrSafe * 0.35 : fallbackSwingLow - atrSafe * 0.25
+float shortStructStop = not na(zoneAbove) ? zoneAbove + atrSafe * 0.35 : fallbackSwingHigh + atrSafe * 0.25
+
+float longAtrStop = close - atrSafe * inputStopATR
+float shortAtrStop = close + atrSafe * inputStopATR
+
+float longStopCandidate = math.min(longAtrStop, longStructStop)
+float shortStopCandidate = math.max(shortAtrStop, shortStructStop)
+
+longStopCandidate := math.min(longStopCandidate, close - atrSafe * 0.15)
+shortStopCandidate := math.max(shortStopCandidate, close + atrSafe * 0.15)
+
+float longRisk = math.max(close - longStopCandidate, atrSafe * 0.15)
+float shortRisk = math.max(shortStopCandidate - close, atrSafe * 0.15)
+
+float longTP1Candidate = close + math.max(longRisk * inputRR1, atrSafe * 0.2)
+float longTP2Candidate = close + math.max(longRisk * inputRR2, atrSafe * 0.4)
+float longTP3Candidate = close + math.max(longRisk * inputRR3, atrSafe * 0.6)
+
+float shortTP1Candidate = close - math.max(shortRisk * inputRR1, atrSafe * 0.2)
+float shortTP2Candidate = close - math.max(shortRisk * inputRR2, atrSafe * 0.4)
+float shortTP3Candidate = close - math.max(shortRisk * inputRR3, atrSafe * 0.6)
+
+if not na(zoneAbove)
+    longTP1Candidate := math.min(longTP1Candidate, zoneAbove - atrSafe * 0.05)
+longTP1Candidate := math.max(longTP1Candidate, close + atrSafe * 0.2)
+
+if not na(zoneBelow)
+    shortTP1Candidate := math.max(shortTP1Candidate, zoneBelow + atrSafe * 0.05)
+shortTP1Candidate := math.min(shortTP1Candidate, close - atrSafe * 0.2)
+
+float rrLong = longRisk > 0 ? (longTP2Candidate - close) / longRisk : 0.0
+float rrShort = shortRisk > 0 ? (close - shortTP2Candidate) / shortRisk : 0.0
+
+float rrScoreLong = normScore(rrLong, 0.9, 3.5)
+float rrScoreShort = normScore(rrShort, 0.9, 3.5)
+
+// =============================================================
+// COMPOSITE SCORING
+// =============================================================
+float weightSum = inputWeightTrend + inputWeightMomentum + inputWeightStructure + inputWeightParticipation + inputWeightRisk
+float wTrend = weightSum > 0 ? inputWeightTrend / weightSum : 0.28
+float wMomentum = weightSum > 0 ? inputWeightMomentum / weightSum : 0.28
+float wStructure = weightSum > 0 ? inputWeightStructure / weightSum : 0.22
+float wParticipation = weightSum > 0 ? inputWeightParticipation / weightSum : 0.10
+float wRisk = weightSum > 0 ? inputWeightRisk / weightSum : 0.12
+
+float longComposite = longTrendScore * wTrend + longMomentumScore * wMomentum + longStructureScore * wStructure + participationScore * wParticipation + rrScoreLong * wRisk
+float shortComposite = shortTrendScore * wTrend + shortMomentumScore * wMomentum + shortStructureScore * wStructure + participationScore * wParticipation + rrScoreShort * wRisk
+
+if inputUseHTF
+    longComposite := longComposite * 0.82 + htfLongScore * 0.18
+    shortComposite := shortComposite * 0.82 + htfShortScore * 0.18
+
+if inputAvoidChop
+    float regimeFactor = chopRegime ? 0.65 : trendRegime ? 1.05 : 0.9
+    longComposite *= regimeFactor
+    shortComposite *= regimeFactor
+
+float longScore = clamp(ta.ema(longComposite, inputSmooth), 0.0, 100.0)
+float shortScore = clamp(ta.ema(shortComposite, inputSmooth), 0.0, 100.0)
+float spread = longScore - shortScore
+int bias = spread > inputBiasEdge ? 1 : spread < -inputBiasEdge ? -1 : 0
+string biasLabel = bias == 1 ? "LONG" : bias == -1 ? "SHORT" : "NEUTRAL"
+float confidenceScore = clamp(math.max(longScore, shortScore) * 0.65 + math.abs(spread) * 0.70, 0.0, 100.0)
+
+bool sessionAllowed = not inputUseSessionFilter or not timeframe.isintraday or not na(time(timeframe.period, inputSession))
+bool chopAllowed = not inputAvoidChop or not chopRegime
+
+bool filtersLong = sessionAllowed and chopAllowed and (not inputUseHTF or htfLongAligned)
+bool filtersShort = sessionAllowed and chopAllowed and (not inputUseHTF or htfShortAligned)
+
+bool qualityLong = longScore >= inputEntryThreshold and bias == 1 and longTrendScore >= 45 and longMomentumScore >= 45 and rrLong >= inputMinRR
+bool qualityShort = shortScore >= inputEntryThreshold and bias == -1 and shortTrendScore >= 45 and shortMomentumScore >= 45 and rrShort >= inputMinRR
+
+var int lastSignalBar = na
+int barsSinceSignal = na(lastSignalBar) ? 100000 : bar_index - lastSignalBar
+bool cooldownReady = barsSinceSignal >= inputCooldown
+
+bool longCross = longScore >= inputEntryThreshold and longScore[1] < inputEntryThreshold
+bool shortCross = shortScore >= inputEntryThreshold and shortScore[1] < inputEntryThreshold
+bool longAcceleration = longScore >= inputStrongThreshold and longScore > longScore[1] + 2.0
+bool shortAcceleration = shortScore >= inputStrongThreshold and shortScore > shortScore[1] + 2.0
+
+bool signalLong = barstate.isconfirmed and cooldownReady and filtersLong and qualityLong and (longCross or longAcceleration)
+bool signalShort = barstate.isconfirmed and cooldownReady and filtersShort and qualityShort and (shortCross or shortAcceleration)
+
+if signalLong or signalShort
+    lastSignalBar := bar_index
+
+bool strongLong = signalLong and longScore >= inputStrongThreshold and confidenceScore >= 70
+bool strongShort = signalShort and shortScore >= inputStrongThreshold and confidenceScore >= 70
+
+// =============================================================
+// ACTIVE TRADE MAP + EXITS
+// =============================================================
+var int activeSide = 0
+var int mapSide = 0
+var float mapEntry = na
+var float mapStop = na
+var float mapTP1 = na
+var float mapTP2 = na
+var float mapTP3 = na
+var float activeTrail = na
+var int mapSignalBar = na
+
+if signalLong
+    activeSide := 1
+    mapSide := 1
+    mapEntry := close
+    mapStop := longStopCandidate
+    float mapRiskLong = math.max(mapEntry - mapStop, atrSafe * 0.15)
+    mapTP1 := mapEntry + mapRiskLong * inputRR1
+    mapTP2 := mapEntry + mapRiskLong * inputRR2
+    mapTP3 := mapEntry + mapRiskLong * inputRR3
+    mapSignalBar := bar_index
+    activeTrail := ta.highest(high, inputTrailLookback) - atrSafe * inputTrailATR
+
+if signalShort
+    activeSide := -1
+    mapSide := -1
+    mapEntry := close
+    mapStop := shortStopCandidate
+    float mapRiskShort = math.max(mapStop - mapEntry, atrSafe * 0.15)
+    mapTP1 := mapEntry - mapRiskShort * inputRR1
+    mapTP2 := mapEntry - mapRiskShort * inputRR2
+    mapTP3 := mapEntry - mapRiskShort * inputRR3
+    mapSignalBar := bar_index
+    activeTrail := ta.lowest(low, inputTrailLookback) + atrSafe * inputTrailATR
+
+float longTrailBase = ta.highest(high, inputTrailLookback) - atrSafe * inputTrailATR
+float shortTrailBase = ta.lowest(low, inputTrailLookback) + atrSafe * inputTrailATR
+
+if activeSide == 1
+    activeTrail := na(activeTrail[1]) ? longTrailBase : math.max(activeTrail[1], longTrailBase)
+else if activeSide == -1
+    activeTrail := na(activeTrail[1]) ? shortTrailBase : math.min(activeTrail[1], shortTrailBase)
+else
+    activeTrail := na
+
+bool exitLong = barstate.isconfirmed and activeSide == 1 and ((close <= mapStop) or (not na(activeTrail) and close <= activeTrail) or (longScore <= inputExitThreshold) or (shortScore > longScore + 4))
+bool exitShort = barstate.isconfirmed and activeSide == -1 and ((close >= mapStop) or (not na(activeTrail) and close >= activeTrail) or (shortScore <= inputExitThreshold) or (longScore > shortScore + 4))
+bool exitAny = exitLong or exitShort
+
+if exitAny
+    activeSide := 0
+    activeTrail := na
+    if inputResetPlanOnExit
+        mapSide := 0
+        mapEntry := na
+        mapStop := na
+        mapTP1 := na
+        mapTP2 := na
+        mapTP3 := na
+        mapSignalBar := na
+
+// =============================================================
+// VISUALS
+// =============================================================
+color biasColor = bias == 1 ? COLOR_LONG : bias == -1 ? COLOR_SHORT : COLOR_NEUTRAL
+
+int bgTransparency = int(math.round(clamp(95.0 - confidenceScore * 0.20, 78.0, 96.0)))
+color bgColor = inputShowBackground ? (bias == 1 ? color.new(COLOR_LONG, bgTransparency) : bias == -1 ? color.new(COLOR_SHORT, bgTransparency) : color.new(COLOR_NEUTRAL, 96)) : na
+bgcolor(bgColor)
+
+int barTransparency = int(math.round(clamp(82.0 - confidenceScore * 0.45, 8.0, 85.0)))
+color barBiasColor = bias == 1 ? color.new(COLOR_LONG, barTransparency) : bias == -1 ? color.new(COLOR_SHORT, barTransparency) : na
+barcolor(inputShowBarColor ? barBiasColor : na)
+
+plotFast = plot(inputShowRibbon ? emaFast : na, "EMA Fast", color=color.new(COLOR_PRIME, 0), linewidth=2)
+plotMid = plot(inputShowRibbon ? emaMid : na, "EMA Mid", color=color.new(COLOR_ACCENT, 0), linewidth=2)
+plotSlow = plot(inputShowRibbon ? emaSlow : na, "EMA Slow", color=color.new(COLOR_NEUTRAL, 10), linewidth=1)
+fill(plotFast, plotMid, color=color.new(bias == 1 ? COLOR_LONG : bias == -1 ? COLOR_SHORT : COLOR_NEUTRAL, 84), title="EMA Ribbon Fill")
+
+float supplyTop = inputShowZones and not na(zoneAbove) ? zoneAbove + zoneTolerance : na
+float supplyBottom = inputShowZones and not na(zoneAbove) ? zoneAbove - zoneTolerance : na
+float demandTop = inputShowZones and not na(zoneBelow) ? zoneBelow + zoneTolerance : na
+float demandBottom = inputShowZones and not na(zoneBelow) ? zoneBelow - zoneTolerance : na
+
+plotSupplyTop = plot(supplyTop, "Supply Top", color=color.new(COLOR_SHORT, 68), style=plot.style_linebr, linewidth=1)
+plotSupplyBottom = plot(supplyBottom, "Supply Bottom", color=color.new(COLOR_SHORT, 68), style=plot.style_linebr, linewidth=1)
+plotDemandTop = plot(demandTop, "Demand Top", color=color.new(COLOR_LONG, 68), style=plot.style_linebr, linewidth=1)
+plotDemandBottom = plot(demandBottom, "Demand Bottom", color=color.new(COLOR_LONG, 68), style=plot.style_linebr, linewidth=1)
+fill(plotSupplyTop, plotSupplyBottom, color=color.new(COLOR_SHORT, 90), title="Supply Fill")
+fill(plotDemandTop, plotDemandBottom, color=color.new(COLOR_LONG, 90), title="Demand Fill")
+
+plotshape(inputShowSweepMarks and liquiditySweepLong, title="Sweep Low", style=shape.circle, location=location.belowbar, color=color.new(COLOR_ACCENT, 0), size=size.tiny, text="S", textcolor=color.black)
+plotshape(inputShowSweepMarks and liquiditySweepShort, title="Sweep High", style=shape.circle, location=location.abovebar, color=color.new(COLOR_ACCENT, 0), size=size.tiny, text="S", textcolor=color.black)
+
+plotshape(inputShowSignalMarkers and signalLong and not strongLong, title="Long Entry", style=shape.triangleup, location=location.belowbar, color=color.new(COLOR_LONG, 0), size=size.small, text="BUY", textcolor=color.white)
+plotshape(inputShowSignalMarkers and signalShort and not strongShort, title="Short Entry", style=shape.triangledown, location=location.abovebar, color=color.new(COLOR_SHORT, 0), size=size.small, text="SELL", textcolor=color.white)
+plotshape(inputShowSignalMarkers and strongLong, title="Strong Long", style=shape.labelup, location=location.belowbar, color=color.new(COLOR_PRIME, 0), size=size.tiny, text="BUY+", textcolor=color.white)
+plotshape(inputShowSignalMarkers and strongShort, title="Strong Short", style=shape.labeldown, location=location.abovebar, color=color.new(COLOR_PRIME, 0), size=size.tiny, text="SELL+", textcolor=color.white)
+plotshape(inputShowSignalMarkers and exitLong, title="Exit Long", style=shape.xcross, location=location.abovebar, color=color.new(COLOR_EXIT, 0), size=size.small, text="EXIT L", textcolor=color.new(COLOR_EXIT, 0))
+plotshape(inputShowSignalMarkers and exitShort, title="Exit Short", style=shape.xcross, location=location.belowbar, color=color.new(COLOR_EXIT, 0), size=size.small, text="EXIT S", textcolor=color.new(COLOR_EXIT, 0))
+
+if inputShowSignalTags and signalLong
+    string longTag = (strongLong ? "BUY+ " : "BUY ") + str.tostring(math.round(longScore)) + "%" + "\nRR " + str.tostring(rrLong, "#.##") + " | C " + str.tostring(math.round(confidenceScore)) + "%"
+    label.new(bar_index, low - atrSafe * 0.65, longTag, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up, color=strongLong ? color.new(COLOR_PRIME, 0) : color.new(COLOR_LONG, 0), textcolor=color.white, size=size.small)
+
+if inputShowSignalTags and signalShort
+    string shortTag = (strongShort ? "SELL+ " : "SELL ") + str.tostring(math.round(shortScore)) + "%" + "\nRR " + str.tostring(rrShort, "#.##") + " | C " + str.tostring(math.round(confidenceScore)) + "%"
+    label.new(bar_index, high + atrSafe * 0.65, shortTag, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=strongShort ? color.new(COLOR_PRIME, 0) : color.new(COLOR_SHORT, 0), textcolor=color.white, size=size.small)
+
+if inputShowSignalTags and exitLong
+    label.new(bar_index, high + atrSafe * 0.55, "EXIT LONG\nTrail/edge break", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=color.new(COLOR_EXIT, 0), textcolor=color.black, size=size.tiny)
+
+if inputShowSignalTags and exitShort
+    label.new(bar_index, low - atrSafe * 0.55, "EXIT SHORT\nTrail/edge break", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up, color=color.new(COLOR_EXIT, 0), textcolor=color.black, size=size.tiny)
+
+bool showMap = inputShowTradeMap and mapSide != 0 and not na(mapEntry)
+float mapTrailPlot = inputShowTradeMap ? activeTrail : na
+
+plotMapEntry = plot(showMap ? mapEntry : na, "Map Entry", color=color.new(COLOR_PRIME, 0), linewidth=2, style=plot.style_linebr)
+plotMapStop = plot(showMap ? mapStop : na, "Map Stop", color=color.new(COLOR_SHORT, 0), linewidth=2, style=plot.style_linebr)
+plotMapTP1 = plot(showMap ? mapTP1 : na, "Map TP1", color=color.new(COLOR_LONG, 12), linewidth=1, style=plot.style_linebr)
+plotMapTP2 = plot(showMap ? mapTP2 : na, "Map TP2", color=color.new(COLOR_LONG, 0), linewidth=2, style=plot.style_linebr)
+plotMapTP3 = plot(showMap ? mapTP3 : na, "Map TP3", color=color.new(COLOR_LONG, 0), linewidth=1, style=plot.style_linebr)
+plotTrail = plot(mapTrailPlot, "Adaptive Trail", color=color.new(COLOR_EXIT, 0), linewidth=2, style=plot.style_linebr)
+
+fill(plotMapEntry, plotMapStop, color=color.new(COLOR_SHORT, 90), title="Risk Fill")
+fill(plotMapEntry, plotMapTP2, color=color.new(COLOR_LONG, 92), title="Reward Fill")
+
+// =============================================================
+// DASHBOARD
+// =============================================================
+var table dashboard = table.new(getTablePosition(inputDashPosition), 3, 10, bgcolor=color.new(COLOR_BG, 6), border_width=1, border_color=color.new(COLOR_BORDER, 30), frame_width=1, frame_color=color.new(COLOR_BORDER, 55))
+var label hudLabel = na
+
+string regimeLabel = trendRegime ? "TREND" : chopRegime ? "CHOP" : "BALANCED"
+color regimeColor = trendRegime ? COLOR_LONG : chopRegime ? COLOR_SHORT : COLOR_NEUTRAL
+string htfLabel = htfLongAligned ? "BULL" : htfShortAligned ? "BEAR" : "MIXED"
+color htfColor = htfLongAligned ? COLOR_LONG : htfShortAligned ? COLOR_SHORT : COLOR_NEUTRAL
+
+float mapRiskNow = mapSide == 1 ? mapEntry - mapStop : mapSide == -1 ? mapStop - mapEntry : na
+float mapRR2 = not na(mapRiskNow) and mapRiskNow > 0 ? (mapSide == 1 ? (mapTP2 - mapEntry) / mapRiskNow : (mapEntry - mapTP2) / mapRiskNow) : na
+float rrDisplayValue = mapSide != 0 and not na(mapRR2) ? mapRR2 : math.max(rrLong, rrShort)
+string rrText = str.tostring(rrDisplayValue, "#.##")
+color rrDisplayColor = rrDisplayValue >= inputMinRR ? COLOR_LONG : COLOR_SHORT
+
+string stateLabel = strongLong ? "LONG+" : strongShort ? "SHORT+" : signalLong ? "LONG" : signalShort ? "SHORT" : exitAny ? "EXIT" : "WAIT"
+color stateColor = strongLong or strongShort ? COLOR_PRIME : signalLong ? COLOR_LONG : signalShort ? COLOR_SHORT : exitAny ? COLOR_EXIT : COLOR_NEUTRAL
+
+bool showFixedTable = inputShowDashboard and (inputDashMode == "Fixed Table" or inputDashMode == "Both")
+bool showAnchoredHud = inputShowDashboard and (inputDashMode == "Chart Anchored" or inputDashMode == "Both")
+
+string mapState = mapSide == 1 ? (activeSide == 1 ? "LONG ACTIVE" : "LONG LOCKED") : mapSide == -1 ? (activeSide == -1 ? "SHORT ACTIVE" : "SHORT LOCKED") : "NONE"
+int barsFromSignal = na(mapSignalBar) ? 0 : bar_index - mapSignalBar
+string mapEntryText = mapSide != 0 and not na(mapEntry) ? str.tostring(mapEntry, "#.#####") : "-"
+string mapStopText = mapSide != 0 and not na(mapStop) ? str.tostring(mapStop, "#.#####") : "-"
+string mapTp2Text = mapSide != 0 and not na(mapTP2) ? str.tostring(mapTP2, "#.#####") : "-"
+string trailText = not na(activeTrail) ? str.tostring(activeTrail, "#.#####") : "-"
+string demandText = not na(zoneBelow) ? str.tostring(zoneBelow, "#.#####") : "-"
+string supplyText = not na(zoneAbove) ? str.tostring(zoneAbove, "#.#####") : "-"
+
+if barstate.islast and showFixedTable
+    table.set_position(dashboard, getTablePosition(inputDashPosition))
+    table.set_bgcolor(dashboard, color.new(COLOR_BG, 6))
+    table.set_border_width(dashboard, 1)
+    table.set_border_color(dashboard, color.new(COLOR_BORDER, 30))
+    table.set_frame_width(dashboard, 1)
+    table.set_frame_color(dashboard, color.new(COLOR_BORDER, 55))
+    table.clear(dashboard, 0, 0, 2, 9)
+    string longMeter = makeMeter(longScore)
+    string shortMeter = makeMeter(shortScore)
+    color headerBg = color.new(biasColor, 85)
+
+    table.cell(dashboard, 0, 0, "APEX HUD", text_color=COLOR_TEXT, text_size=getTextSize(inputDashSize, true), bgcolor=headerBg)
+    table.cell(dashboard, 1, 0, "STATE", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false), bgcolor=headerBg)
+    table.cell(dashboard, 2, 0, stateLabel, text_color=stateColor, text_size=getTextSize(inputDashSize, true), bgcolor=headerBg)
+
+    table.cell(dashboard, 0, 1, "BIAS", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 1, 1, biasLabel, text_color=biasColor, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 2, 1, "C " + str.tostring(math.round(confidenceScore)) + "%", text_color=confidenceScore >= 70 ? COLOR_PRIME : COLOR_NEUTRAL, text_size=getTextSize(inputDashSize, false))
+
+    table.cell(dashboard, 0, 2, "LONG", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 1, 2, str.tostring(math.round(longScore)), text_color=COLOR_LONG, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 2, 2, longMeter, text_color=COLOR_LONG, text_size=getTextSize(inputDashSize, false))
+
+    table.cell(dashboard, 0, 3, "SHORT", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 1, 3, str.tostring(math.round(shortScore)), text_color=COLOR_SHORT, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 2, 3, shortMeter, text_color=COLOR_SHORT, text_size=getTextSize(inputDashSize, false))
+
+    table.cell(dashboard, 0, 4, "REGIME", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 1, 4, regimeLabel, text_color=regimeColor, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 2, 4, "HTF " + htfLabel, text_color=htfColor, text_size=getTextSize(inputDashSize, false))
+
+    table.cell(dashboard, 0, 5, "RISK", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 1, 5, "R:R " + rrText, text_color=rrDisplayColor, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 2, 5, sessionAllowed ? "SESSION OPEN" : "SESSION BLOCKED", text_color=sessionAllowed ? COLOR_LONG : COLOR_SHORT, text_size=getTextSize(inputDashSize, false))
+
+    table.cell(dashboard, 0, 6, "MAP", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 1, 6, mapState, text_color=mapSide == 1 ? COLOR_LONG : mapSide == -1 ? COLOR_SHORT : COLOR_NEUTRAL, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 2, 6, "BAR " + str.tostring(barsFromSignal), text_color=COLOR_TEXT, text_size=getTextSize(inputDashSize, false))
+
+    table.cell(dashboard, 0, 7, "ENTRY", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 1, 7, mapEntryText, text_color=COLOR_PRIME, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 2, 7, "STOP " + mapStopText, text_color=COLOR_SHORT, text_size=getTextSize(inputDashSize, false))
+
+    table.cell(dashboard, 0, 8, "TP2", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 1, 8, mapTp2Text, text_color=COLOR_LONG, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 2, 8, "TRAIL " + trailText, text_color=not na(activeTrail) ? COLOR_EXIT : COLOR_NEUTRAL, text_size=getTextSize(inputDashSize, false))
+
+    table.cell(dashboard, 0, 9, "ZONES", text_color=COLOR_TEXT_MUTED, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 1, 9, "D " + demandText, text_color=COLOR_LONG, text_size=getTextSize(inputDashSize, false))
+    table.cell(dashboard, 2, 9, "S " + supplyText, text_color=COLOR_SHORT, text_size=getTextSize(inputDashSize, false))
+
+if barstate.islast and not showFixedTable
+    table.clear(dashboard, 0, 0, 2, 9)
+    table.set_bgcolor(dashboard, color.new(COLOR_BG, 100))
+    table.set_border_width(dashboard, 0)
+    table.set_border_color(dashboard, color.new(COLOR_BORDER, 100))
+    table.set_frame_width(dashboard, 0)
+    table.set_frame_color(dashboard, color.new(COLOR_BORDER, 100))
+
+if barstate.islast and showAnchoredHud
+    if na(hudLabel)
+        hudLabel := label.new(bar_index, high, "", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, color=color.new(COLOR_BG, 10), textcolor=COLOR_TEXT, size=getTextSize(inputDashSize, false))
+    int hudX = bar_index + inputHudBarsOffset
+    float hudY = high + atrSafe * 0.55
+    string hudText = "ASM PRO " + stateLabel + "\n" +
+      "Bias " + biasLabel + " | C " + str.tostring(math.round(confidenceScore)) + "%\n" +
+      "L " + str.tostring(math.round(longScore)) + "  S " + str.tostring(math.round(shortScore)) + "\n" +
+      "Regime " + regimeLabel + " | HTF " + htfLabel + "\n" +
+      "R:R " + rrText + " | " + (sessionAllowed ? "SESSION OPEN" : "SESSION BLOCKED")
+    label.set_x(hudLabel, hudX)
+    label.set_y(hudLabel, hudY)
+    label.set_text(hudLabel, hudText)
+    label.set_color(hudLabel, color.new(COLOR_BG, 10))
+    label.set_textcolor(hudLabel, COLOR_TEXT)
+    label.set_style(hudLabel, label.style_label_left)
+    label.set_size(hudLabel, getTextSize(inputDashSize, false))
+else if barstate.islast and not showAnchoredHud
+    label.delete(hudLabel)
+    hudLabel := na
+
+// =============================================================
+// ALERTS
+// =============================================================
+alertcondition(signalLong and inputAlertEntries, "ASM Long Entry", "ASM Pro: Long entry signal")
+alertcondition(signalShort and inputAlertEntries, "ASM Short Entry", "ASM Pro: Short entry signal")
+alertcondition((strongLong or strongShort) and inputAlertStrong, "ASM Strong Signal", "ASM Pro: Strong signal")
+alertcondition(exitAny and inputAlertExits, "ASM Exit", "ASM Pro: Exit signal")
+alertcondition((liquiditySweepLong or liquiditySweepShort) and inputAlertSweeps, "ASM Liquidity Sweep", "ASM Pro: Liquidity sweep detected")
+
+// =============================================================
+// DATA WINDOW EXPORTS
+// =============================================================
+plot(longScore, "Long Composite Score", display=display.data_window, color=COLOR_LONG)
+plot(shortScore, "Short Composite Score", display=display.data_window, color=COLOR_SHORT)
+plot(confidenceScore, "Confidence Score", display=display.data_window, color=COLOR_PRIME)
+plot(regimeScore, "Regime Score", display=display.data_window, color=COLOR_ACCENT)
+plot(rrLong, "Long R:R", display=display.data_window, color=COLOR_LONG)
+plot(rrShort, "Short R:R", display=display.data_window, color=COLOR_SHORT)
